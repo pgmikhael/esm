@@ -24,6 +24,7 @@ import torch
 import torch.nn.functional as F
 
 # make sure script started from the root of the this file
+# nox2
 assert Path.cwd().name == "lm-design", "Please run this script from examples/lm-design/"
 sys.path.append("../../")
 from esm.data import Alphabet
@@ -55,6 +56,8 @@ from nox.utils.registry import get_object
 import pickle
 from argparse import Namespace
 
+# DR-Bert
+from transformers import AutoTokenizer, AutoModelForTokenClassification
 
 CLASSIFIER_CLASSES = [
     "nuclear_speckle",
@@ -74,7 +77,13 @@ CLASSIFIER_CLASSES = [
 
 class OrderedQueue:
     def __init__(
-        self, path: str, threshold: float, lag: int, consistency_steps: int, exit_at_success=False
+        self,
+        path: str,
+        threshold: float,
+        lag: int,
+        consistency_steps: int,
+        warmup_steps,
+        exit_at_success=False,
     ):
         # options: add to list and save at end, write to file, write only at condition and stop
         # self.list = []
@@ -85,20 +94,13 @@ class OrderedQueue:
         self.threshold = threshold
         self.autocorrelation_lag_time = lag
         self.num_good_consecutive_steps_ = 0
+        self.warmup_steps = warmup_steps
         self.consistency = consistency_steps
         self.path = path + ".txt"
 
-    # def add(self, elem):
-    #     if len(self.list) < self.max_length:
-    #         self.list.append(elem)
-    #     else:
-    #         if elem[-1] > self.list[-1][-1]:
-    #             self.list[-1] = elem
-    #     self.list = sorted(self.list, key=lambda x: x[1], reverse=True)
-
     def write(self, elem):
-        if elem[-1] < self.threshold:
-            return
+        # if elem[-1] < self.threshold:
+        #     return
         # uncorrelate samples by only saving if they're k steps apart
         if self.counter_ - self.write_step < self.autocorrelation_lag_time:
             return
@@ -106,7 +108,18 @@ class OrderedQueue:
             g.write(f"{self.counter_}:\t{elem[0]}\t{elem[-1]}\n")
         self.write_step += 1
 
+        if elem[-1] >= self.threshold:
+            self.num_good_consecutive_steps_ += 1
+        else:
+            self.num_good_consecutive_steps_ = 0  # reset
+
+        if self.counter_ >= self.warmup_steps:
+            if self.num_good_consecutive_steps_ > self.consistency:
+                sys.exit()
+
     def write_and_exit(self, elem):
+        if self.counter_ < self.warmup_steps:
+            return
         if elem[-1] >= self.threshold:
             self.num_good_consecutive_steps_ += 1
         else:
@@ -138,6 +151,13 @@ def load_nox_model():
         **{"args": snargs},
     )
     return model.model
+
+
+def load_drbert():
+    checkpoint = "/Mounts/rbg-storage1/users/pgmikhael/esm/drbert_checkpoint"
+    tokenizer = AutoTokenizer.from_pretrained(checkpoint)
+    model = AutoModelForTokenClassification.from_pretrained(checkpoint)
+    return model, tokenizer
 
 
 class Designer:
@@ -188,6 +208,7 @@ class Designer:
             cfg.classifier_threshold,
             cfg.classifier_lag,
             cfg.classifier_consistency_steps,
+            cfg.warmup_steps,
             cfg.exit_at_success,
         )
 
@@ -220,6 +241,10 @@ class Designer:
         # 5. Classifier guidance
         self.classifier = load_nox_model()
         self.classifier = apply_common_settings(self.classifier)
+
+        # 6. DR. BERT guidance
+        self.drbert, self.drbert_tokenizer = load_drbert()
+        self.drbert = apply_common_settings(self.drbert)
 
     def encode(self, seq_raw, onehot=True):
         device = self.device
@@ -368,6 +393,22 @@ class Designer:
         self.save_queue.step((idr_seq, score))
         return -logits
 
+    def drbert_loss(self, x_seqs):
+        """
+        Calculate the drbert loss for disorder for the given sequences. TODO
+        """
+        seqs = self.decode(x_seqs)
+        encoded = self.drbert_tokenizer.encode_plus(seqs[0], return_tensors="pt")
+        for k, v in encoded.items():
+            encoded[k] = v.to(self.device)
+        with torch.no_grad():
+            output = self.drbert(**encoded)
+        logits = F.log_softmax(torch.squeeze(output["logits"]), dim=-1)[1:-1, 1]
+        # chunk of generated sequence
+        L = self.cfg.free_generation_length
+        logits = logits[:L].sum() if self.cfg.attachment == "start" else logits[-L:].sum()
+        return -logits
+
     def calc_ngram_loss(self, x_seqs, ngram_orders=[1, 2, 3, 4]):
         B = x_seqs.size(0)
         ngram_loss = torch.zeros(B).to(x_seqs)
@@ -424,7 +465,17 @@ class Designer:
         return total_loss, loss_dict
 
     def calc_total_loss(
-        self, x, mask, LM_w, struct_w, ngram_w, ngram_orders, class_w, class_idx, temp_struct=None
+        self,
+        x,
+        mask,
+        LM_w,
+        struct_w,
+        ngram_w,
+        ngram_orders,
+        class_w,
+        class_idx,
+        drbert_w,
+        temp_struct=None,
     ):
         """
         Easy one-stop-shop that calls out to all the implemented loss calculators,
@@ -468,6 +519,12 @@ class Designer:
             class_m_nlls *= class_w
             total_loss += class_m_nlls
             logs["class_loss"] = class_m_nlls
+
+        if drbert_w:
+            drbert_m_nlls = self.drbert_loss(x)
+            drbert_m_nlls *= drbert_w
+            total_loss += drbert_m_nlls
+            logs["drbert_loss"] = drbert_m_nlls
 
         return total_loss, logs  # [B], Dict[str:[B]]
 

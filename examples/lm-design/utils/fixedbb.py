@@ -34,7 +34,9 @@ def stage_fixedbb(self, cfg, disable_tqdm=False):
         # mask 1 place
 
         mask = torch.zeros((B, L, 1), dtype=torch.bool).to(x)  # [B,L,1]
-        if self.x_mutatable_mask.sum() == self.x_mutatable_mask.numel():  # all mutable
+        if (
+            self.x_mutatable_mask.numel() - (self.x_mutatable_mask).sum().item()
+        ) == self.x_mutatable_mask.numel():  # all mutable
             mask[:, torch.randint(0, L, (B,))] = True  # [B,L,1]
         else:
             # constrain to specific positions

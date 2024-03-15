@@ -6,7 +6,7 @@
 seed: 0
 num_seqs: 1
 init_sequence: 'LVQLVHAAGGVAALGAFVLFHDGVVLVVGKDVQLDVDVVGAGQLHGLLGLVGGLDLSVVVAAVLQLQPLLDLALQGAVLGVHPLSGGLPAHGTTLHYGAVGGEVGAAQLHLVDELAVLQGGVLGHGHHAAVLEVHHALPIEALGEGQLQVVGDVGGVLHVGLGAVHELRGQDVPGEGQGATLGHLQLGGLGALVGAALALALDLELVAVHGALHVHLEAHELLDDGHVILLALAH'
-attachment: 'end' # start or end
+attachment: 'start' # start or end
 test_mode: False
 allow_missing_residue_coords: True
 # suppress_AA: 'C'
@@ -17,9 +17,11 @@ pdb_fn:  # set as empty string when using free_generation
 free_generation_length: 100
 
 classifier_threshold: 0.85
-classifier_lag: 1000
+classifier_lag: 0
 classifier_consistency_steps: 10
-exit_at_success: True
+warmup_steps: 1000
+# exit_at_success: True
+exit_at_success: False
 save_path: ''
 tasks:
   free_generation:
@@ -41,6 +43,7 @@ tasks:
               ngram_orders: [1,2,3]
               class_w: 1
               class_idx: 'stress_granule'
+              drbert_w: 1
           temperature:
               scheduler: StepLR
               step_size: 10000
