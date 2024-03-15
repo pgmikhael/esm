@@ -169,6 +169,9 @@ class Designer:
     # Inits
     ##########################################
     def __init__(self, cfg, target_pdb_path=None, device=None):
+        ## generation type
+        self.attachment = cfg.attachment
+        assert self.attachment in ["start", "end", "mask"]
         ## Initialize models
         if device:
             self.device = device
@@ -319,30 +322,52 @@ class Designer:
         num_seqs = cfg.num_seqs
         assert num_seqs == 1, "Only 1 sequence design in parallel supported for now."
         self.B = B = self.num_seqs = num_seqs
-        L = cfg.free_generation_length
-
         K = len(self.vocab)
         AA_indices = torch.arange(K, device=self.device)[self.vocab_mask_AA]
-        bt = torch.from_numpy(np.random.choice(AA_indices.cpu().numpy(), size=(B, L))).to(
-            self.device
-        )
-        x_seqs = F.one_hot(bt, K).float()
-        init_seqs = x_seqs.clone()
-        x_mutatable_mask = torch.zeros_like(x_seqs).bool()
 
-        if cfg.init_sequence:
-            fixed_seq = self.encode(cfg.init_sequence).unsqueeze(0).repeat(B, 1, 1).to(self.device)
-            if cfg.attachment == "start":
-                x_seqs = torch.concat([x_seqs, fixed_seq], dim=1)
-                x_mutatable_mask = torch.zeros(B, x_seqs.shape[1]).bool().to(x_seqs)
-                x_mutatable_mask[:, :L] = True
-            elif cfg.attachment == "end":
-                x_seqs = torch.concat([fixed_seq, x_seqs], dim=1)
-                x_mutatable_mask = torch.zeros(B, x_seqs.shape[1]).bool().to(x_seqs)
-                x_mutatable_mask[:, -L:] = True
-            else:
-                raise ValueError(f"Invalid attachment: {cfg.attachment}")
+        if self.attachment == "mask":
+            # this generalizes the below; but it is newer, so below is kept for backwards compatibility
+            # mutate anywhere the init sequence has an X
+            fixed_seq = self.encode(cfg.init_sequence, onehot=False).unsqueeze(0).to(self.device)
+            L = len(cfg.init_sequence)
+            # make random sequence of equal length
+            bt = torch.from_numpy(np.random.choice(AA_indices.cpu().numpy(), size=(B, L))).to(
+                self.device
+            )
+            # get places where we can mutate
+            x_mutatable_mask = (
+                torch.tensor([aa == "X" for aa in cfg.init_sequence]).to(self.device).int()
+            )
+            # replace fixed positions with original sequence
+            bt = x_mutatable_mask * bt + (1 - x_mutatable_mask) * fixed_seq
+            x_seqs = F.one_hot(bt, K).float()
             init_seqs = x_seqs.clone()
+            x_mutatable_mask = x_mutatable_mask.unsqueeze(0).bool()
+
+        else:
+            L = cfg.free_generation_length
+            bt = torch.from_numpy(np.random.choice(AA_indices.cpu().numpy(), size=(B, L))).to(
+                self.device
+            )
+            x_seqs = F.one_hot(bt, K).float()
+            init_seqs = x_seqs.clone()
+            x_mutatable_mask = torch.zeros_like(x_seqs).bool()
+
+            if cfg.init_sequence:
+                fixed_seq = (
+                    self.encode(cfg.init_sequence).unsqueeze(0).repeat(B, 1, 1).to(self.device)
+                )
+                if cfg.attachment == "start":
+                    x_seqs = torch.concat([x_seqs, fixed_seq], dim=1)
+                    x_mutatable_mask = torch.zeros(B, x_seqs.shape[1]).bool().to(x_seqs)
+                    x_mutatable_mask[:, :L] = True
+                elif cfg.attachment == "end":
+                    x_seqs = torch.concat([fixed_seq, x_seqs], dim=1)
+                    x_mutatable_mask = torch.zeros(B, x_seqs.shape[1]).bool().to(x_seqs)
+                    x_mutatable_mask[:, -L:] = True
+                else:
+                    raise ValueError(f"Invalid attachment: {cfg.attachment}")
+                init_seqs = x_seqs.clone()
 
         self.x_mutatable_mask = x_mutatable_mask
         self.x_seqs = x_seqs
@@ -388,8 +413,17 @@ class Designer:
         score = torch.exp(logits).item()
         logger.info(f"Probability of localization: {score}")
 
-        L = self.cfg.free_generation_length
-        idr_seq = seqs[0][:L] if self.cfg.attachment == "start" else seqs[0][-L:]
+        if self.attachment == "start":
+            L = self.cfg.free_generation_length
+            idr_seq = seqs[0][:L]
+        elif self.attachment == "end":
+            L = self.cfg.free_generation_length
+            idr_seq = seqs[0][-L:]
+        elif self.attachment == "mask":
+            idr_seq = ".".join(
+                [s if self.x_mutatable_mask[0, i] else "-" for i, s in enumerate(seqs[0])]
+            )
+
         self.save_queue.step((idr_seq, score))
         return -logits
 
@@ -406,7 +440,13 @@ class Designer:
         logits = F.log_softmax(torch.squeeze(output["logits"]), dim=-1)[1:-1, 1]
         # chunk of generated sequence
         L = self.cfg.free_generation_length
-        logits = logits[:L].sum() if self.cfg.attachment == "start" else logits[-L:].sum()
+
+        if self.attachment == "start":
+            logits = logits[:L].sum()
+        elif self.attachment == "end":
+            logits = logits[-L:].sum()
+        elif self.attachment == "mask":
+            logits = (logits * self.x_mutatable_mask).sum()
         return -logits
 
     def calc_ngram_loss(self, x_seqs, ngram_orders=[1, 2, 3, 4]):
