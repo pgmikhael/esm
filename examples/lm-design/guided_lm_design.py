@@ -51,7 +51,7 @@ from utils import ngram as ngram_utils
 logger = logging.getLogger(__name__)  # Hydra configured
 os.environ["MKL_THREADING_LAYER"] = "GNU"
 # nox code
-sys.path.append("/Mounts/rbg-storage1/users/pgmikhael/noxdup/")
+sys.path.append("/data/rsg/mammogram/pgmikhael/noxdup")
 from nox.utils.registry import get_object
 import pickle
 from argparse import Namespace
@@ -140,10 +140,10 @@ class OrderedQueue:
 
 def load_nox_model():
     """load model from nox codebase"""
-    args = "/Mounts/rbg-storage1/users/ilanm/nox2/logs/32bf44b16a4e770a674896b81dfb3729.args"
+    args = "/data/rsg/mammogram/pgmikhael/saved_models/condensates/32bf44b16a4e770a674896b81dfb3729.args"
     snargs = Namespace(**pickle.load(open(args, "rb")))
     modelpath = snargs.model_path
-    snargs.pretrained_hub_dir = "/Mounts/rbg-storage1/snapshots/metabolomics/esm2"
+    snargs.pretrained_hub_dir = "/data/rsg/mammogram/pgmikhael/esm/esm2"
     model = get_object(snargs.lightning_name, "lightning")(snargs)
     model = model.load_from_checkpoint(
         checkpoint_path=modelpath,
@@ -154,7 +154,7 @@ def load_nox_model():
 
 
 def load_drbert():
-    checkpoint = "/Mounts/rbg-storage1/users/pgmikhael/esm/drbert_checkpoint"
+    checkpoint = "/data/rsg/mammogram/pgmikhael/esm/drbert_checkpoint"
     tokenizer = AutoTokenizer.from_pretrained(checkpoint)
     model = AutoModelForTokenClassification.from_pretrained(checkpoint)
     return model, tokenizer
@@ -411,7 +411,7 @@ class Designer:
         logits = self.classifier({"x": seqs})
         logits = torch.nn.functional.logsigmoid(logits["logit"])[:, class_idx]
         score = torch.exp(logits).item()
-        logger.info(f"Probability of localization: {score}")
+        # logger.info(f"Probability of localization: {score}")
 
         if self.attachment == "start":
             L = self.cfg.free_generation_length
@@ -420,7 +420,7 @@ class Designer:
             L = self.cfg.free_generation_length
             idr_seq = seqs[0][-L:]
         elif self.attachment == "mask":
-            idr_seq = ".".join(
+            idr_seq = "".join(
                 [s if self.x_mutatable_mask[0, i] else "-" for i, s in enumerate(seqs[0])]
             )
 
@@ -679,7 +679,7 @@ class Designer:
         return [self.schedulers[name] for name in kwargs]
 
 
-@hydra.main(config_path="conf/", config_name="config")
+@hydra.main(config_path="conf/", config_name="config", version_base="1.3")
 def main(cfg: DictConfig) -> None:
     args_no_spaces = [arg.replace(" ", "") for arg in sys.argv[1:]]
     logger.info(f"Running with args: {' '.join(args_no_spaces)}")
