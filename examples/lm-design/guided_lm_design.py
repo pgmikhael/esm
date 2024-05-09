@@ -50,9 +50,7 @@ from utils import ngram as ngram_utils
 
 logger = logging.getLogger(__name__)  # Hydra configured
 os.environ["MKL_THREADING_LAYER"] = "GNU"
-# nox code
-sys.path.append("/data/rsg/mammogram/pgmikhael/noxdup")
-from nox.utils.registry import get_object
+from protgps.utils.registry import get_object
 import pickle
 from argparse import Namespace
 
@@ -140,10 +138,11 @@ class OrderedQueue:
 
 def load_nox_model():
     """load model from nox codebase"""
-    args = "/data/rsg/mammogram/pgmikhael/saved_models/condensates/32bf44b16a4e770a674896b81dfb3729.args"
+    os.dirname()
+    args = "../../../checkpoints/protgps/32bf44b16a4e770a674896b81dfb3729.args"
     snargs = Namespace(**pickle.load(open(args, "rb")))
-    modelpath = snargs.model_path
-    snargs.pretrained_hub_dir = "/data/rsg/mammogram/pgmikhael/esm/esm2"
+    modelpath = "../../../checkpoints/protgps/32bf44b16a4e770a674896b81dfb3729epoch=26.ckpt"
+    snargs.pretrained_hub_dir = "../../../checkpoints/esm2"
     model = get_object(snargs.lightning_name, "lightning")(snargs)
     model = model.load_from_checkpoint(
         checkpoint_path=modelpath,
@@ -154,7 +153,7 @@ def load_nox_model():
 
 
 def load_drbert():
-    checkpoint = "/data/rsg/mammogram/pgmikhael/esm/drbert_checkpoint"
+    checkpoint = "../../../checkpoints/drbert"
     tokenizer = AutoTokenizer.from_pretrained(checkpoint)
     model = AutoModelForTokenClassification.from_pretrained(checkpoint)
     return model, tokenizer
@@ -697,8 +696,8 @@ def main(cfg: DictConfig) -> None:
     des.run_from_cfg()
     logger.info("finished after %s hours", (time.time() - start_time) / 3600)
 
-    pickle.dump(des.save_queue.list, open(path, "wb"))
-    logger.info(f"saved designs in {path}")
+    # pickle.dump(des.save_queue.list, open(path, "wb"))
+    # logger.info(f"saved designs in {path}")
 
 
 if __name__ == "__main__":
